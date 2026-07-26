@@ -1,0 +1,10 @@
+# Hermes Chat — .gitignore
+__pycache__/
+*.pyc
+*.db
+uploads/
+*.log
+.env
+.DS_Store
+instance/
+nohup.out

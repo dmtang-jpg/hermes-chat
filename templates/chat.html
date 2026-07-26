@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0f1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hermes">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<title>Hermes Chat</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+<div id="app" class="app">
+  <!-- ======= Login Screen ======= -->
+  <div id="loginScreen" class="login-screen">
+    <div class="login-box">
+      <div class="login-icon"><i class="fa-solid fa-comments"></i></div>
+      <h2>Hermes Chat</h2>
+      <p class="login-sub">AI Agent 聊天 · 多模型 · 话题</p>
+      <input type="text" id="usernameInput" placeholder="输入用户名以登录..." autofocus>
+      <button id="loginBtn" class="btn-primary" style="width:100%;margin-top:12px;">进入聊天</button>
+    </div>
+  </div>
+
+  <!-- ======= Main App ======= -->
+  <div id="mainApp" class="main-app" style="display:none;">
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="user-info">
+          <div class="user-avatar" id="userAvatar">?</div>
+          <span class="user-name" id="userName"></span>
+        </div>
+        <button class="btn-icon" title="新建聊天" id="btnNewChat"><i class="fa-solid fa-plus"></i></button>
+      </div>
+      <!-- Search -->
+      <div class="sidebar-search">
+        <i class="fa-solid fa-search"></i>
+        <input type="text" placeholder="搜索聊天..." id="sidebarSearch">
+      </div>
+      <!-- Chat List -->
+      <div class="chat-list" id="chatList"></div>
+      
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <button class="btn-icon" title="书签" id="btnBookmarks"><i class="fa-solid fa-bookmark"></i></button>
+        <button class="btn-icon" title="设置" id="btnSettingsGlobal"><i class="fa-solid fa-gear"></i></button>
+        <button class="btn-icon" title="注销" id="btnLogout"><i class="fa-solid fa-right-from-bracket"></i></button>
+      </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="chat-area" id="chatArea">
+      <!-- Empty State -->
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon"><i class="fa-solid fa-message-lines"></i></div>
+        <h3>Hermes Chat</h3>
+        <p>选择一个聊天开始对话，或创建新的对话</p>
+      </div>
+
+      <!-- Active Chat -->
+      <div id="activeChat" class="active-chat" style="display:none;">
+        <div class="chat-header">
+          <div class="back-btn" id="backBtn">
+            <i class="fa-solid fa-arrow-left"></i>
+          </div>
+          <div class="chat-title-area">
+            <div class="chat-title" id="chatTitle">---</div>
+            <div class="chat-subtitle" id="chatSubtitle"></div>
+          </div>
+          <div class="chat-actions">
+            <select id="modelSelect" class="model-select" title="选择模型">
+              <option value="deepseek/deepseek-v4-pro">DeepSeek</option>
+              <option value="claude/sonnet">Claude</option>
+              <option value="ollama/qwen3.6:35b-lowtemp">Qwen</option>
+            </select>
+            <button class="btn-icon" title="话题列表" id="btnTopics"><i class="fa-solid fa-list-ul"></i></button>
+            <button class="btn-icon" title="设置" id="btnSettings"><i class="fa-solid fa-gear"></i></button>
+          </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="messages-area" id="messagesArea"></div>
+
+        <!-- Topic Indicator -->
+        <div class="topic-indicator" id="topicIndicator" style="display:none;">
+          <i class="fa-solid fa-hashtag"></i>
+          <span id="topicName"></span>
+          <button class="btn-sm" id="btnBackToMain">回主话题</button>
+        </div>
+
+        <!-- Input Area -->
+        <div class="message-input-area">
+          <div class="input-tools">
+            <button class="btn-icon-tool" title="上传文件" id="btnUpload"><i class="fa-solid fa-paperclip"></i></button>
+            <input type="file" id="fileInput" style="display:none;">
+            <span id="filePreview" class="file-preview"></span>
+          </div>
+          <textarea id="messageInput" placeholder="输入消息..." rows="1"></textarea>
+          <button id="sendBtn" class="btn-send"><i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+
+        <!-- Scroll-to-bottom FAB -->
+        <button class="scroll-fab" id="scrollFab" title="滚动到底部"><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+    </div>
+
+    <!-- Desktop Right Panel (Topics / Settings / Bookmarks) -->
+    <div class="right-panel" id="rightPanel" style="display:none;">
+      <div class="panel-header">
+        <h3 id="panelTitle">---</h3>
+        <button class="btn-close" id="btnClosePanel"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="panel-content" id="panelContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= Bottom Sheet (Mobile) ======= -->
+<div class="bottom-sheet-overlay" id="bottomSheetOverlay"></div>
+<div class="bottom-sheet" id="bottomSheet">
+  <div class="bottom-sheet-handle"></div>
+  <div class="bottom-sheet-header">
+    <h3 id="bottomSheetTitle">---</h3>
+    <button class="btn-close" id="bottomSheetClose"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  <div class="bottom-sheet-body" id="bottomSheetBody"></div>
+</div>
+
+<!-- ======= Context Menu (Long-press) ======= -->
+<div class="context-menu" id="contextMenu">
+  <button class="context-menu-item" data-action="quote">
+    <i class="fa-solid fa-reply"></i> 引用回复
+  </button>
+  <button class="context-menu-item" data-action="copy">
+    <i class="fa-regular fa-copy"></i> 复制
+  </button>
+  <button class="context-menu-item" data-action="bookmark">
+    <i class="fa-regular fa-bookmark"></i> 收藏
+  </button>
+  <div class="context-menu-divider"></div>
+  <button class="context-menu-item danger" data-action="delete-msg">
+    <i class="fa-solid fa-trash"></i> 删除消息
+  </button>
+</div>
+
+<!-- ======= Toast ======= -->
+<div class="toast" id="toast"></div>
+
+<!-- ======= Modals ======= -->
+<div class="modal-overlay" id="newChatModal" style="display:none;">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>创建聊天</h3>
+      <button class="btn-close" onclick="closeModal('newChatModal')"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>聊天名称</label>
+        <input type="text" id="newChatName" placeholder="输入聊天名称">
+      </div>
+      <div class="form-group">
+        <label>聊天类型</label>
+        <span style="color:var(--text-secondary);font-size:13px;">🤖 AI Agent 对话</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal('newChatModal')">取消</button>
+      <button class="btn-primary" id="btnCreateChat">创建</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+<script src="/static/js/app.js"></script>
+<script>
+// PWA Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js');
+  });
+}
+</script>
+</body>
+</html>
