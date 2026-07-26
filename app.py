@@ -112,32 +112,59 @@ def list_chats():
     if not username:
         return jsonify([])
     chats = ChatUser.query.filter_by(username=username).all()
+    # Fetch all chat_ids for batch queries
+    chat_ids = [cu.chat_id for cu in chats]
+    if not chat_ids:
+        return jsonify([])
+    
+    # Batch: get last message per chat
+    from sqlalchemy import and_
+    last_msgs = {}
+    subq = (
+        db.select(
+            Message.chat_id,
+            func.max(Message.timestamp).label("max_ts")
+        )
+        .where(Message.chat_id.in_(chat_ids))
+        .group_by(Message.chat_id)
+        .subquery()
+    )
+    rows = db.session.execute(
+        db.select(Message)
+        .join(subq, and_(
+            Message.chat_id == subq.c.chat_id,
+            Message.timestamp == subq.c.max_ts
+        ))
+    ).scalars().all()
+    for m in rows:
+        last_msgs[m.chat_id] = m
+    
+    # Batch: get unread counts per chat
+    unread_counts = {}
+    unread_rows = db.session.execute(
+        db.select(Message.chat_id, func.count(Message.id))
+        .where(
+            Message.chat_id.in_(chat_ids),
+            Message.sender != username,
+            ~Message.is_read,
+            Message.topic_id.is_(None)
+        )
+        .group_by(Message.chat_id)
+    ).all()
+    for chat_id, count in unread_rows:
+        unread_counts[chat_id] = count
+    
     result = []
     for cu in chats:
         chat = cu.chat
-        last_msg = db.session.execute(
-            db.select(Message)
-            .where(Message.chat_id == chat.id)
-            .order_by(Message.timestamp.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        last_msg_preview = last_msg.content[:30] if last_msg else None
-        last_ts = last_msg.timestamp.isoformat() if last_msg else ""
-        unread = db.session.execute(
-            db.select(func.count(Message.id)).where(
-                Message.chat_id == chat.id,
-                Message.sender != username,
-                ~Message.is_read,
-                Message.topic_id.is_(None)
-            )
-        ).scalar()
+        last_msg = last_msgs.get(chat.id)
         result.append({
             "chat_id": chat.id,
             "name": chat.name,
             "chat_type": chat.chat_type,
-            "last_message": last_msg_preview,
-            "last_timestamp": last_ts,
-            "unread_count": unread,
+            "last_message": last_msg.content[:30] if last_msg else None,
+            "last_timestamp": last_msg.timestamp.isoformat() if last_msg else "",
+            "unread_count": unread_counts.get(chat.id, 0),
             "pinned": bool(chat.pinned),
         })
     # Sort: pinned first, then by last_timestamp descending
@@ -145,8 +172,7 @@ def list_chats():
     unpinned_items = [r for r in result if not r["pinned"]]
     pinned_items.sort(key=lambda x: x["last_timestamp"] or "", reverse=True)
     unpinned_items.sort(key=lambda x: x["last_timestamp"] or "", reverse=True)
-    result = pinned_items + unpinned_items
-    return jsonify(result)
+    return jsonify(pinned_items + unpinned_items)
 
 
 @app.route("/api/chats/<int:chat_id>", methods=["DELETE"])
@@ -189,6 +215,8 @@ def create_chat():
     data = request.get_json() or {}
     name = data.get("name", "").strip()
     chat_type = data.get("chat_type", "direct")
+    if chat_type not in ("direct", "group", "bot"):
+        return jsonify(error="无效的聊天类型", code=400), 400
     creator = data.get("creator", "")
     if not creator:
         return jsonify(error="需要用户名", code=400), 400
@@ -271,7 +299,7 @@ def create_topic(chat_id):
 def get_messages(chat_id):
     since = request.args.get("since", "")
     try:
-        limit = int(request.args.get("limit", 50))
+        limit = min(int(request.args.get("limit", 50)), 200)
     except (ValueError, TypeError):
         limit = 50
     topic_id = request.args.get("topic_id", "")

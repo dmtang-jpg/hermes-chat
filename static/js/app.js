@@ -233,6 +233,7 @@ function initLongPress(el, msgId, text, isBot) {
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     moved = false;
+    clearTimeout(_longPressTimer);
     _longPressTimer = setTimeout(() => {
       if (!moved) {
         showContextMenu(startX, startY, msgId, text, isBot);
@@ -333,6 +334,7 @@ async function sendMessage() {
   }
   
   // Normal chat (WebSocket)
+  if (!state.ws || !state.connected) return;
   state.ws.emit('sendMessage', {
     chat_id: state.currentChatId,
     sender: state.username,
@@ -642,7 +644,7 @@ function appendMessage(msg) {
 // Simple markdown → HTML
 function renderMarkdown(text) {
   let html = escapeHtml(text);
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => 
+  html = html.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_, lang, code) => 
     `<pre class="md-code"><code>${code.trim()}</code></pre>`);
   html = html.replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -673,7 +675,7 @@ function linkifyUrls(html) {
   const safeBlocks = [];
   const placeholder = '\x00LINKIFYBLOCK\x00';
   let idx = 0;
-  html = html.replace(/(<(?:a|pre|code|img)\b[\s\S]*?<\/\1>)/gi, (match) => {
+  html = html.replace(/<(a|pre|code|img)\b[\s\S]*?<\/\1>/gi, (match) => {
     safeBlocks.push(match);
     return placeholder + (idx++) + placeholder;
   });
@@ -1096,7 +1098,7 @@ function showBookmarks() {
 function removeBookmark(msgId, btnEl) {
   let bookmarks = JSON.parse(localStorage.getItem('chat_bookmarks') || '[]');
   bookmarks = bookmarks.filter(b => b.id !== msgId);
-  localStorage.setItem('chat_bookmarks', JSON.stringify(bookmarks));
+  _safeSetItem('chat_bookmarks', JSON.stringify(bookmarks));
   if (btnEl) btnEl.closest('.bookmark-item')?.remove();
   // Update card icon
   const btn = document.querySelector(`.card-header-actions button[onclick*="${msgId}"][onclick*="bookmark"]`);
@@ -1110,7 +1112,7 @@ function copyCardContent(msgId) {
   const body = document.getElementById(msgId);
   if (!body) return;
   const text = body.innerText || body.textContent;
-  navigator.clipboard.writeText(text).then(() => showToast('已复制'));
+  navigator.clipboard.writeText(text).then(() => showToast('已复制')).catch(() => showToast('复制失败'));
 }
 
 function quoteMessage(msgId) {
@@ -1134,7 +1136,7 @@ function bookmarkMessage(msgId) {
   
   if (existing) {
     bookmarks = bookmarks.filter(b => b.id !== msgId);
-    localStorage.setItem('chat_bookmarks', JSON.stringify(bookmarks));
+    _safeSetItem('chat_bookmarks', JSON.stringify(bookmarks));
     showToast('已取消收藏');
     // Update icon
     const btn = document.querySelector(`.card-header-actions button[onclick*="${msgId}"][onclick*="bookmark"]`);
@@ -1147,7 +1149,7 @@ function bookmarkMessage(msgId) {
       chat_name: state.chatList.find(c => c.chat_id == state.currentChatId)?.name || '',
       timestamp: new Date().toISOString(),
     });
-    localStorage.setItem('chat_bookmarks', JSON.stringify(bookmarks));
+    _safeSetItem('chat_bookmarks', JSON.stringify(bookmarks));
     showToast('已收藏 📑');
     const btn = document.querySelector(`.card-header-actions button[onclick*="${msgId}"][onclick*="bookmark"]`);
     if (btn) btn.innerHTML = '<i class="fa-solid fa-bookmark" style="color:var(--orange)"></i>';
@@ -1343,6 +1345,12 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// Safe localStorage wrapper
+function _safeSetItem(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch (e) { showToast('存储空间不足，请清理旧数据'); return false; }
 }
 
 function getAvatarColor(name) {
