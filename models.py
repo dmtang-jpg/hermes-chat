@@ -70,3 +70,15 @@ class Topic(db.Model):
     # relationships
     chat = db.relationship("Chat", back_populates="topics")
     messages = db.relationship("Message", back_populates="topic")
+
+class Agent(db.Model):
+    __tablename__ = 'agents'
+    id = db.Column(db.Integer, primary_key=True)
+    chat_id = db.Column(db.Integer, db.ForeignKey('chats.id'), nullable=False)
+    name = db.Column(db.String(64), nullable=False)
+    model = db.Column(db.String(128), default='deepseek/deepseek-v4-pro')
+    system_prompt = db.Column(db.Text, default='')
+    auto_reply = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    chat = db.relationship('Chat', backref='agents')

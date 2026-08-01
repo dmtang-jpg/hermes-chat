@@ -11,8 +11,9 @@ from sqlalchemy import func
 import requests
 from werkzeug.utils import secure_filename
 from config import HOST, PORT, SECRET_KEY, DB_PATH, HERMES_API_BASE
-from models import db, User, Chat, Message, ChatUser, Topic
-from hermes_adapter import get_adapter, create_bot_session, get_bot_session, append_bot_message, send_to_hermes, clear_hermes_session
+from models import db, User, Chat, Message, ChatUser, Topic, Agent
+from hermes_adapter import get_adapter, create_bot_session, get_bot_session, send_to_hermes, clear_hermes_session
+from agent_group import agent_bp, trigger_group_agents
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -24,6 +25,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = (
 )
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 CORS(app)
+app.register_blueprint(agent_bp)
 db.init_app(app)
 
 with app.app_context():
@@ -444,6 +446,13 @@ def on_send_message(data):
     
     emit("newMessage", payload, room=f"chat_{chat_id}")
     
+    # Agent group chat trigger
+    try:
+        cid = int(chat_id)
+    except:
+        cid = None
+    if cid and Agent.query.filter_by(chat_id=cid, auto_reply=True).count() > 0:
+        socketio.start_background_task(trigger_group_agents, socketio, cid, sender, content, topic_id)
     # 如果是 topic 消息，也通知该 topic 的所有用户
     if topic_id:
         emit("topicMessage", payload, room=f"chat_{chat_id}_topic_{topic_id}")
@@ -464,17 +473,39 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def _get_box_token():
-    """从文件读取 NJU Box token，不存在则用空字符串。"""
+    """获取 NJU Box 认证 token：优先复用 /tmp 缓存，失效则 JWT 登录获取。"""
     try:
         with open("/tmp/box_token_raw.txt", "r") as f:
-            token = f.read().strip()
-        return token if token else ""
+            cached = f.read().strip()
+        if cached:
+            return cached
     except FileNotFoundError:
+        pass
+    # JWT 登录兜底（与 nju_box_api.py 一致）
+    try:
+        r = requests.post(
+            "https://box.nju.edu.cn/api2/auth-token/",
+            json={
+                "username": os.environ.get("BOX_USER", "0410037"),
+                "password": os.environ.get("BOX_PASS", "njuee366"),
+            },
+            verify=False,
+            timeout=20,
+        )
+        r.raise_for_status()
+        token = r.json()["token"]
+        with open("/tmp/box_token_raw.txt", "w") as f:
+            f.write(token)
+        return token
+    except Exception as e:
+        print(f"[Box] Token error: {e}")
         return ""
 
 
-# 全局 requests Session 复用连接
+# 全局 requests Session 复用连接（JWT token 认证 + 跳过代理）
 _box_session = requests.Session()
+_box_session.verify = False
+_box_session.trust_env = False  # 绕过系统代理，box 在校内直连
 
 
 def _upload_to_box(file_path, filename):
@@ -487,38 +518,51 @@ def _upload_to_box(file_path, filename):
         "BOX_REPO_ID", "26fa0b5f-a7e0-429f-9d7f-8ecda8ef1a66"
     )
     try:
-        # Step 1: 获取上传链接
-        resp = _box_session.post(
+        # Step 1: 获取上传链接（正确 API：GET + p 参数，返回纯文本 URL）
+        resp = _box_session.get(
             f"https://box.nju.edu.cn/api2/repos/{repo_id}/upload-link/",
+            params={"p": "/"},
             headers={"Authorization": f"Token {token}"},
             timeout=15,
         )
         resp.raise_for_status()
-        data = resp.json()
-        upload_url = data.get("upload_url", "")
+        upload_url = resp.text.strip().strip('"')
         if not upload_url:
             return ""
 
-        # Step 2: 上传文件
+        # Step 2: 上传文件（POST upload_url + parent_dir + filename）
         with open(file_path, "rb") as f:
             resp = _box_session.post(
-                upload_url,
+                f"{upload_url}?ret-json=1",
                 files={"file": (filename, f, "application/octet-stream")},
+                data={"parent_dir": "/"},
                 timeout=60,
             )
         if resp.status_code not in (200, 201):
-            print(f"[Box] Upload failed: {resp.status_code}")
+            print(f"[Box] Upload failed: {resp.status_code} {resp.text[:100]}")
             return ""
 
-        # Step 3: 获取文件路径并构造下载链接
-        file_path_remote = f"/{filename}"
-        resp = _box_session.get(
-            f"https://box.nju.edu.cn/api2/repos/{repo_id}" + file_path_remote,
+        # Step 3: 创建分享链接（PUT shared-link，返回在 Location header）
+        share = _box_session.put(
+            f"https://box.nju.edu.cn/api2/repos/{repo_id}/file/shared-link/",
+            json={"p": f"/{filename}"},
+            headers={
+                "Authorization": f"Token {token}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        if share.status_code == 201:
+            return share.headers.get("Location", "")
+        # 分享链接失败则尝试直接下载 URL
+        dl = _box_session.get(
+            f"https://box.nju.edu.cn/api2/repos/{repo_id}/file/",
+            params={"p": f"/{filename}"},
             headers={"Authorization": f"Token {token}"},
             timeout=15,
         )
-        resp.raise_for_status()
-        return resp.json().get("download_url", "")
+        dl.raise_for_status()
+        return dl.text.strip().strip('"')
 
     except Exception as e:
         print(f"[Box] Error: {e}")
@@ -621,10 +665,12 @@ def upload_file():
         return jsonify(error="非法文件路径", code=400), 400
     file.save(filepath)
     
-    # Try NJU Box upload
+    # Try NJU Box upload（函数内部有默认 repo_id + token 兜底，失败自动回退本地）
     box_download_url = ""
-    if os.environ.get("BOX_REPO_ID"):
+    try:
         box_download_url = _upload_to_box(filepath, filename)
+    except Exception as e:
+        print(f"[Box] Upload exception: {e}")
     
     # Build accessible URL (local fallback)
     file_url = f"/static/uploads/{filename}"
@@ -762,6 +808,10 @@ def bot_send():
         "timestamp": user_msg.timestamp.isoformat(),
     }
     socketio.emit("newMessage", user_payload, room=f"chat_{chat_id}")
+    agent_count = Agent.query.filter_by(chat_id=chat_id_int, auto_reply=True).count()
+    if agent_count > 0:
+        socketio.start_background_task(trigger_group_agents, socketio, chat_id_int, sess.user, message)
+
 
     # 通过 hermes CLI 发送（完整Agent能力），自动管理session
     system_prompt = _bot_system_prompts.get(chat_id_int)
